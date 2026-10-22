@@ -13,8 +13,27 @@ explicit execution timing, and a test suite that checks these properties directl
 
 ---
 
+## Dashboard Preview
+
+### Saved run: equity curve against the S&P 500
+
+The SMA 50/200 crossover with next-day execution: overview metrics and the
+portfolio's daily value compared with SPY buy-and-hold.
+
+![Saved run view showing overview metrics and the equity curve against SPY](screenshots/Screenshot%202026-10-22%20at%201.38.08%E2%80%AFAM.png)
+
+### Strategy comparison across periods
+
+Annualised return and maximum drawdown for each strategy over the full history
+and each robustness period, with the metrics table below.
+
+![Strategy comparison view with annualised return and max drawdown by period](screenshots/Screenshot%202026-10-22%20at%201.38.17%E2%80%AFAM.png)
+
+---
+
 ## Contents
 
+- [Dashboard Preview](#dashboard-preview)
 - [Highlights](#highlights)
 - [Architecture](#architecture)
 - [Getting started](#getting-started)
