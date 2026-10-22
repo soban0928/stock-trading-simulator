@@ -1,419 +1,452 @@
 # Stock Trading Simulator
 
-A day-by-day stock trading simulator using historical US market data. You start
-with $10,000 of virtual cash, trade US stocks at each day's closing price, and
-compare your performance with the S&P 500.
+A day-by-day backtesting engine for US equities, written in Python. It replays
+historical daily prices one trading day at a time, runs trading strategies against a
+virtual $10,000 portfolio, stores every trade and daily snapshot in SQLite, and
+measures performance against an S&P 500 (SPY) benchmark in a Streamlit dashboard.
 
-> Work in progress. This README will be completed as the project is built.
+The emphasis is on **correctness**: exact decimal accounting, no look-ahead bias,
+explicit execution timing, and a test suite that checks these properties directly.
 
-## Current status
+> **Educational project.** It uses historical data only, never places real trades,
+> and does not manage real money. Backtested results do not predict future returns.
 
-- [x] Stage 1: core portfolio engine (cash, buy/sell, commission, fractional shares)
-- [x] Stage 2: historical price data loading
-- [x] Stage 3: day-by-day replay engine
-- [x] Stage 4: SQLite storage
-- [x] Stage 5: performance analytics vs S&P 500
-- [x] Stage 6: Streamlit dashboard
-- [x] Stage 7: trading strategies (SPY buy-and-hold, 50/200-day moving-average crossover)
-- [x] Next-trading-day execution (`--execution next_close`)
-- [x] Stage 8: fair strategy comparison and robustness periods
+---
 
-## Setup (macOS)
+## Contents
+
+- [Highlights](#highlights)
+- [Architecture](#architecture)
+- [Getting started](#getting-started)
+- [How it works](#how-it-works)
+  - [Backtesting engine](#backtesting-engine)
+  - [Portfolio accounting](#portfolio-accounting)
+  - [Strategies](#strategies)
+  - [Performance analytics](#performance-analytics)
+  - [Fair strategy comparison](#fair-strategy-comparison)
+  - [SQLite persistence](#sqlite-persistence)
+  - [Streamlit dashboard](#streamlit-dashboard)
+- [Results](#results)
+- [Limitations](#limitations)
+- [Testing](#testing)
+- [Project structure](#project-structure)
+
+---
+
+## Highlights
+
+- **Day-by-day replay engine** that only exposes prices up to the current day, so
+  strategies cannot see the future.
+- **Two execution models:** fill at the signal day's close (`same_close`, the
+  default) or at the next trading day's close (`next_close`), with pending orders,
+  fill-day position sizing, and rejected/unfilled order tracking.
+- **Exact portfolio accounting** using `Decimal`: commissions, fractional shares
+  (down to 0.000001), average-cost basis and realised profit/loss.
+- **Strategies:** SPY buy-and-hold and a 50/200-day simple moving-average
+  crossover, registered under unique names.
+- **Analytics:** total and annualised return, maximum drawdown, volatility and
+  Sharpe ratio, compared with a SPY buy-and-hold benchmark over the same dates.
+- **Robustness testing:** every strategy run side by side over the full history and
+  over 2015–2019, 2020–2022 and 2023–2026, under identical conditions.
+- **SQLite persistence** with transactional, duplicate-safe saves.
+- **Interactive Streamlit dashboard** with equity curve, drawdown chart, metrics,
+  trade and daily history tables, and the strategy comparison.
+- **253 automated tests**, including tests that prove signals cannot use future
+  prices and that next-day orders cannot fill early.
+
+**Tech stack:** Python · pandas · SQLite (Python standard library `sqlite3`) ·
+Streamlit · Altair · yfinance · pytest
+
+---
+
+## Architecture
+
+```
+ Yahoo Finance
+      │  simulator/download.py      (yfinance → one CSV per ticker)
+      ▼
+ data/prices/*.csv                  date, close   (split-adjusted closes)
+      │  simulator/data_loader.py   (validates files, aligns trading days)
+      ▼
+ PriceHistory ──────────────► simulator/engine.py  Simulation
+                                │   day-by-day replay, execution timing
+                                │   uses simulator/portfolio.py  (cash, positions, trades)
+                                │   calls simulator/strategies.py (buy-and-hold, SMA crossover)
+                                ▼
+                     trades + daily snapshots
+                 ┌──────────────┴───────────────┐
+                 ▼                              ▼
+   simulator/storage.py (SQLite)      simulator/comparison.py (in memory,
+                 │                     every strategy × every period)
+                 ▼                              │
+   simulator/analytics.py  ◄────────────────────┘
+   (metrics, SPY benchmark)
+                 │
+                 ▼
+   dashboard/  (Streamlit UI)   and   command-line reports
+```
+
+Each layer has a single job. The portfolio enforces trading rules but knows
+nothing about dates; the engine controls time and prices but not the rules; the
+strategies only decide; analytics only measure; the dashboard only displays
+numbers computed by the modules above it.
+
+---
+
+## Getting started
+
+Developed and tested on macOS with Python 3.14.
+
+### 1. Install
 
 ```bash
-cd "path/to/Stock Trading Simulator"
+git clone https://github.com/soban0928/stock-trading-simulator.git
+cd stock-trading-simulator
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+Dependencies (`requirements.txt`): `pandas`, `yfinance`, `streamlit` (which
+includes Altair) and `pytest`.
+
+### 2. Download price data
+
+Prices are not included in the repository. Download them from Yahoo Finance
+(requires an internet connection):
+
+```bash
+python -m simulator.download                  # from 2015-01-01 (default)
+python -m simulator.download --start 2018-01-01
+```
+
+This saves `data/prices/<TICKER>.csv` for 15 stocks (AAPL, MSFT, NVDA, GOOGL,
+AMZN, META, JPM, GS, MS, BAC, V, JNJ, KO, WMT, XOM) and the SPY benchmark. The
+ticker list, benchmark and start date are set in `simulator/config.py`.
+
+### 3. Run strategies and reports
+
+```bash
+python -m simulator.run_strategy --list                    # available strategies
+python -m simulator.run_strategy                           # run and save all of them
+python -m simulator.run_strategy --execution next_close    # next-day execution
+python -m simulator.analytics spy_sma_crossover_50_200     # one run vs SPY
+python -m simulator.comparison                             # all strategies × all periods
+python -m simulator.storage                                # list saved runs
+python -m examples.buy_and_hold                            # small example: 10 AAPL shares
+```
+
+### 4. Launch the dashboard
+
+```bash
+streamlit run dashboard/app.py
+```
+
+It opens at http://localhost:8501. Press `Ctrl+C` in the terminal to stop it.
+
+### 5. Run the tests
+
+```bash
 pytest
 ```
 
-## Getting price data
+The tests use small hand-written price files, so they need no internet
+connection and no downloaded data.
 
-Prices are downloaded from Yahoo Finance with the unofficial
-[yfinance](https://github.com/ranaroussi/yfinance) library and saved as CSV
-files in `data/prices/`. They are not included in this repository; download
-them yourself:
+---
 
-```bash
-python -m simulator.download
-```
+## How it works
 
-The stock list, benchmark (SPY) and start date are set in `simulator/config.py`.
-Trades use the daily close adjusted for stock splits but not dividends.
+### Backtesting engine
 
-## Running a simulation
+`simulator/engine.py` — `Simulation`
 
-`simulator/engine.py` replays the price data one trading day at a time. On each
-day you can only see prices up to that day's close, and every trade happens at
-that close (with the commission added), so no decision can use future prices.
+- Holds a **current day** that only moves forward. `sim.run(strategy)` calls the
+  strategy once per trading day, oldest first, then records a `DailySnapshot`
+  (cash, market value, total value, profit/loss, holdings).
+- Strategies can only see `sim.price(ticker)` (today's close) and
+  `sim.past_closes(ticker)` (closes up to and including today). The full price
+  table is private, so there is no way to read a later price.
+- Optional `start` and `end` dates; indicators may still look back at prices
+  before `start` (legitimate history), never after the current day.
 
-```python
-from simulator.config import PRICE_DATA_DIR, TICKERS
-from simulator.data_loader import PriceHistory
-from simulator.engine import Simulation
+**Execution timing** (`Simulation(prices, execution=...)`):
 
-prices = PriceHistory.from_directory(PRICE_DATA_DIR, TICKERS)
-sim = Simulation(prices)  # $10,000 cash, $1.00 commission per trade
-
-def buy_and_hold(sim):
-    if not sim.trades:
-        sim.buy("AAPL", 10)
-
-history = sim.run(buy_and_hold)
-print(history[-1].day, history[-1].total_value, history[-1].profit_loss)
-```
-
-`sim.history` holds one `DailySnapshot` per day (cash, market value, total
-value, profit/loss, holdings) and `sim.trades` holds every executed trade.
-
-A ready-made version of this is in `examples/buy_and_hold.py`:
-
-```bash
-python -m examples.buy_and_hold
-```
-
-## Trading strategies
-
-`simulator/strategies.py` holds ready-made strategies, each registered under a
-unique name. Run them with:
-
-```bash
-python -m simulator.run_strategy --list                     # what's available
-python -m simulator.run_strategy spy_buy_and_hold           # run one
-python -m simulator.run_strategy spy_sma_crossover_50_200
-python -m simulator.run_strategy                            # run all of them
-python -m simulator.run_strategy --execution next_close     # fill orders a day later
-python -m simulator.analytics spy_sma_crossover_50_200      # compare with SPY
-```
-
-Each run is saved to the database under the strategy's name, with $10,000
-starting cash and a $1.00 commission per trade. Running a strategy again
-**replaces** its saved copy (like the example script), so there is always one
-copy per strategy and the dashboard picks it up straight away. Strategies are
-deterministic: the same price data always gives the same trades.
-
-| Name | What it does |
-|---|---|
-| `spy_buy_and_hold` | Spends all the cash on SPY at the first day's close (after one commission), then holds |
-| `spy_sma_crossover_50_200` | Buys SPY with all the cash when its 50-day average crosses **above** its 200-day average; sells every share when it crosses **below** |
-
-### How the moving-average crossover decides
-
-- The **50-day simple moving average** is the mean of the last 50 closes,
-  including today's; the 200-day one uses the last 200.
-- A **crossing** compares today with the previous trading day: "crosses above"
-  means the 50-day was at or below the 200-day yesterday and is above it today.
-- **No trades until both averages exist for today and yesterday** (201 trading
-  days of prices, so the first possible signal is in October 2015).
-- A buy signal while already invested, or a sell signal with nothing to sell,
-  does nothing. If the 50-day is already above the 200-day when the averages
-  first exist, that is not a crossing, so the strategy waits in cash for the
-  next upward cross.
-
-### Assumptions and limitations
-
-- **Execution timing.** By default a signal and its trade both use the same
-  day's close, which isn't possible in real life. Run with
-  `--execution next_close` to fill each order at the next trading day's close
-  instead; see [Execution timing](#execution-timing) below.
-- **All in or all out.** Every buy spends all available cash (shares rounded
-  down to 6 decimal places, so it never overspends); every sell sells
-  everything. Cash earns no interest while out of the market.
-- **No dividends, taxes, slippage or bid/ask spread**, only the $1 commission.
-  Price data is split-adjusted but not dividend-adjusted, which especially
-  understates the buy-and-hold strategies.
-- **Crossovers react late.** They are built from averages of past prices, so
-  they often buy after a rally has started and sell after a fall has happened.
-  In this data the sell signal for the 2020 crash came on 30 March 2020, a week
-  after the bottom, so the strategy took the full crash drawdown.
-- **One price history, one result.** A strategy that did well (or badly) on
-  2015–2026 SPY data says little about how it would do in the future.
-
-`spy_buy_and_hold` uses the same `BuyAndHold` strategy that analytics uses as
-the S&P 500 benchmark, so its results match the benchmark exactly.
-
-### Execution timing
-
-A strategy runs after day *t*'s close is known, because it uses that close to
-make its decision. The question is when its order fills. The engine has two
-settings (`Simulation(prices, execution=...)`):
-
-| Setting | Order placed on day *t* fills at | Use |
+| Setting | Order decided after day *t*'s close fills at | Notes |
 |---|---|---|
-| `same_close` (default) | day *t*'s close, immediately | Simple, and how all earlier runs were made. Optimistic: in reality you can't see a close and still trade at it |
-| `next_close` | day *t+1*'s close | Realistic timing: the decision only uses information you'd have had, and the trade happens afterwards |
+| `same_close` (default) | day *t*'s close, immediately | Simple, but optimistic: in practice you cannot see a close and still trade at it |
+| `next_close` | day *t+1*'s close | Orders are queued with `submit_order()` and filled when the simulation reaches the next trading day |
 
-How `next_close` works:
+In `next_close` mode:
 
-- `sim.submit_order(ticker, "BUY" or "SELL", quantity)` queues the order. It
-  fills when the simulation moves to the next trading day, before the strategy
-  runs for that day. `buy_all` and `sell_all` (used by both strategies) do this
-  automatically. Calling `sim.buy()` or `sim.sell()` directly raises an error,
-  so nothing can fill on the signal day by mistake.
-- **"All cash" and "all shares" orders are sized on the fill day**, using that
-  day's cash, holdings and price, with one commission and shares rounded down to
-  6 decimal places. A price jump overnight can't make the portfolio overspend.
-- A **fixed-quantity** order that can't be afforded on the fill day is recorded
-  in `sim.rejected_orders` with the reason; no commission is charged and the
-  simulation carries on.
-- On a fill day, **sells fill before buys**, so a sale's cash can fund a purchase.
-- An order placed on the **last day** has no next day and is never filled; it
-  appears in `sim.unfilled_orders`.
-- Runs are saved with a `__next_close` suffix (for example
-  `spy_sma_crossover_50_200__next_close`), so they sit beside the same-day
-  versions in the database, analytics and dashboard. Re-running replaces only
-  that version's copy.
+- "All cash" and "all shares" orders are **sized on the fill day**, from that day's
+  cash, holdings and price, so an overnight price jump cannot overspend.
+- **Sells fill before buys** on the same day, so sale proceeds can fund purchases.
+- A fixed-quantity order that is unaffordable on the fill day is recorded in
+  `rejected_orders` (no commission charged) and the simulation continues.
+- An order placed on the last day has no next day and appears in `unfilled_orders`.
+- Calling `sim.buy()` / `sim.sell()` directly raises an error, so nothing can fill
+  on the signal day by mistake.
 
-Limitations:
+The price files contain closing prices only, so **next-day open execution is not
+supported** and opening prices are never estimated. Adding it would require
+downloading and validating an `open` column and a fresh download of every file.
 
-- **No opening prices.** The price files only contain `date,close`, so the
-  engine can't fill at the next day's *open*, which is when an order sent
-  overnight would really fill. Supporting that would need: `download.py` to also
-  keep yfinance's `Open` column (split-adjusted, like the close, with
-  `auto_adjust=False`), CSVs with a `date,open,close` layout, `data_loader.py` to
-  validate the opens like the closes, a `next_open` setting in the engine, and a
-  fresh download of every file. Opening prices are never estimated.
-- The S&P 500 benchmark in analytics still buys at the first day's close, so a
-  `next_close` buy-and-hold run starts one day later than its benchmark.
-- Rejected and unfilled orders are reported when a strategy runs, but are not
-  saved to the database.
-- A one-day delay isn't automatically worse; it changes the fill prices. On this
-  data, `next_close` happened to do slightly better for both strategies. Its
-  value is that it can't benefit from knowing a price before trading at it.
+### Portfolio accounting
 
-To add your own strategy, write a class or function that takes the
-`Simulation` (like `MovingAverageCrossover`) and add a `StrategySpec` with a new
-unique name to `STRATEGIES`. Duplicate names are rejected.
+`simulator/portfolio.py` — `Portfolio`
 
-## Fair strategy comparison and robustness periods
+- Money and share quantities use **`Decimal`, not `float`**, so cash balances are
+  exact. Money is rounded to cents (half-up) at each trade.
+- **Commission** (default $1.00) is charged on every buy and sell. The default
+  starting cash is $10,000.
+- **Fractional shares** down to 6 decimal places. "Buy with all cash" rounds the
+  share count *down*, so it never spends more than the cash available.
+- **Average-cost basis:** the commission paid on a purchase is included in the
+  position's cost; selling records **realised profit/loss** on each trade.
+- **Validation:** buying without enough cash raises `InsufficientFundsError`;
+  selling more than is held raises `InsufficientSharesError`; malformed tickers,
+  quantities, prices or dates raise `InvalidOrderError`. A failed trade changes
+  nothing.
 
-`simulator/comparison.py` runs every registered strategy side by side, over the
-full history and over separate periods, to see whether a result holds up in
-different market conditions or depends on one lucky stretch.
+### Strategies
 
-```bash
-python -m simulator.comparison                                  # same-day close
-python -m simulator.comparison --execution next_close --risk-free-rate 0.04
-```
+`simulator/strategies.py` — each strategy is registered with a unique name, which
+is also the name its results are saved under. Duplicate names are rejected.
 
-The same comparison is in the dashboard: choose **Strategy comparison** in the
-sidebar. It runs in memory and saves nothing, so saved runs are not changed.
+| Name | Rule |
+|---|---|
+| `spy_buy_and_hold` | Invest all cash in SPY at the first opportunity (after one commission) and hold to the end |
+| `spy_sma_crossover_50_200` | Buy SPY with all cash when the 50-day simple moving average crosses **above** the 200-day; sell all shares when it crosses **below** |
 
-### Methodology
+**SMA crossover details**
 
-| Period | Dates used (this data) | Earlier trading days available for warm-up |
+- Averages are the mean of the last 50 / 200 closes, **including the current day**.
+- A crossing compares the current day with the previous trading day: "crosses
+  above" means the 50-day was at or below the 200-day yesterday and above it today.
+- No signal until both averages exist for today *and* yesterday (201 closes). With
+  data starting 2015-01-02, the first possible signal is **2015-10-19**.
+- A buy signal while invested, or a sell signal with nothing held, does nothing. If
+  the 50-day is already above the 200-day when a run starts, that is not a
+  crossing, so the strategy waits in cash for the next upward cross.
+- Strategies are stateless: the same data always produces the same trades.
+
+### Performance analytics
+
+`simulator/analytics.py` — metrics are computed from the value series: the starting
+cash followed by each day's closing portfolio value.
+
+| Metric | Definition |
+|---|---|
+| Total return | final value ÷ starting cash − 1 |
+| Annualised return (CAGR) | (final ÷ start)^(1 ÷ years) − 1, with years = calendar days ÷ 365.25 |
+| Maximum drawdown | largest fall from a previous peak to a later value |
+| Volatility | sample standard deviation of daily returns × √252 |
+| Sharpe ratio | mean(daily return − daily risk-free rate) ÷ std. dev. of daily returns × √252 |
+
+- The risk-free rate defaults to **0%** (`RISK_FREE_RATE` in `simulator/config.py`)
+  and can be changed with `--risk-free-rate`, e.g. `0.04` for 4%.
+- Values that cannot be calculated (for example volatility from one day, or Sharpe
+  ratio for an all-cash portfolio) are reported as `n/a` instead of a misleading
+  number.
+- **Benchmark:** SPY buy-and-hold over exactly the strategy's dates, built with the
+  same engine and the same `BuyAndHold` strategy. If SPY is missing a date, the
+  comparison raises an error instead of silently misaligning.
+
+### Fair strategy comparison
+
+`simulator/comparison.py` runs every registered strategy side by side over several
+periods, in memory (nothing is saved):
+
+| Period | Trading days in this data | Earlier days available for indicator warm-up |
 |---|---|---|
 | Full history | 2015-01-02 → 2026-10-21 | 0 |
 | 2015–2019 | 2015-01-02 → 2019-12-31 | 0 |
 | 2020–2022 | 2020-01-02 → 2022-12-30 | 1,258 |
 | 2023–2026 | 2023-01-03 → 2026-10-21 (data ends here) | 2,014 |
 
-Within each period, every strategy gets **identical conditions**:
+Within a period, every strategy gets the **same trading days, $10,000 starting
+cash, $1.00 commission and execution setting**, and starts fresh in cash. The
+benchmark is the `spy_buy_and_hold` strategy itself under the same settings, so its
+start date matches the other strategies (including under `next_close`).
 
-- the same trading days (the first and last trading day inside the period);
-- $10,000 starting cash and a $1.00 commission per trade;
-- the same execution setting (`same_close` or `next_close`);
-- a fresh start: in cash on the first day, with nothing carried over from an
-  earlier period.
+- **Warm-up:** moving averages may use closes from *before* a period starts (they
+  are already in the past), but never after the current day, and nothing after the
+  period's end is used. Tests confirm that truncating the data at the period's end,
+  or changing every later price, leaves results unchanged.
+- Each period also reports trades, the share of days invested, and how the
+  crossover's averages stood on the period's first day.
 
-**The benchmark is the `spy_buy_and_hold` strategy itself**, run under those
-same conditions. Under `next_close` it buys one day late, like every other
-strategy, so its start date is consistent with theirs. (The analytics report
-for a single saved run still buys SPY at the first day's close; see
-[Execution timing](#execution-timing).)
+### SQLite persistence
 
-Each period reports total return, annualised return, max drawdown, volatility
-and Sharpe ratio (calculated by `simulator/analytics.py`, as defined below),
-plus the number of trades and the share of days the strategy ended invested.
+`simulator/storage.py` saves runs to `data/simulator.db` (kept out of Git).
 
-### Indicator warm-up and look-ahead bias
-
-- Moving averages use closes **up to and including the current day**. On the
-  first day of a period, that includes prices from *before* the period: they
-  are already in the past, so using them is legitimate. This is the warm-up.
-- **Nothing after the current day is used, and nothing after the period's end
-  is used at all.** Tests check this two ways: cutting the price data off at the
-  period's end gives identical results, and changing every later price changes
-  nothing.
-- **2015–2019 (and Full history) have no earlier data**, because the price files
-  start on 2015-01-02. The 50/200 crossover needs 201 closes for its first
-  possible signal, which comes on **2015-10-19**. Until then it can only hold cash,
-  while buy-and-hold is invested from day 1. This difference can't be avoided
-  with this data, and it lowers the crossover's 2015–2019 result.
-- Each period's report notes how the crossover's averages stood on its first day.
-
-### Assumptions and limitations
-
-- **Fresh starts change results.** A crossover only buys on an upward *cross*. On
-  2020-01-02 the 50-day average was already above the 200-day average, so the
-  fresh 2020–2022 run waited in cash until the next upward cross (2020-07-09)
-  and so missed the 2020 crash. The continuous full-history run was invested
-  through that crash. The crossover's strong 2020–2022 numbers are partly an
-  effect of where the period starts, not evidence of skill.
-- **Few, overlapping, hand-picked periods.** Three periods of one market (SPY) are
-  a small sample. The periods were chosen by calendar year, not to favour any
-  strategy, but results can change a lot if the boundaries move.
-- **The latest period is partial** (it ends with the data on 2026-10-21), and
-  annualised figures for shorter periods are less reliable.
-- **Strategy settings were not tuned per period**, and the 50/200 windows are a
-  common convention, not an optimised choice. Optimising them on this data and
-  then judging them on the same data would overstate results.
-- The same data limits as elsewhere apply: no dividends, no interest on cash, no
-  slippage or taxes, and either same-day or next-day *close* execution only.
-- **None of these results show that a strategy is profitable or robust in the
-  future.** They describe what these rules would have done on this history.
-
-## Saving results (SQLite)
-
-`simulator/storage.py` saves a simulation's trades and daily snapshots to
-`data/simulator.db`, a single SQLite file. Like the price data, it is
-generated locally and kept out of Git by `.gitignore`.
+- Four tables: `runs`, `trades`, `snapshots` and `holdings`, linked by foreign keys
+  with cascading deletes.
+- Money and quantities are stored as `TEXT` so `Decimal` values round-trip exactly.
+- Each save is a **single transaction**: a failure part-way leaves nothing behind.
+- Run names are unique. Saving an existing name raises `RunExistsError` unless
+  `overwrite=True`, which replaces the old copy. The strategy runner uses
+  overwrite, so re-running a strategy keeps exactly one copy. Runs using
+  `next_close` are saved with a `__next_close` suffix.
 
 ```python
 from simulator.storage import list_runs, load_snapshots, load_trades, save_simulation
 
-save_simulation(sim, "my_strategy")       # after sim.run(...)
-print(list_runs())                        # ['my_strategy']
-trades = load_trades("my_strategy")       # list of Trade
-history = load_snapshots("my_strategy")   # list of DailySnapshot
+save_simulation(sim, "my_strategy")
+trades = load_trades("my_strategy")        # list[Trade]
+history = load_snapshots("my_strategy")    # list[DailySnapshot]
 ```
 
-Every saved run needs a unique name. Saving the same name again raises
-`RunExistsError`, so nothing is duplicated by accident; pass `overwrite=True`
-to replace the old copy instead. The database file and its tables are created
-automatically the first time you save.
+### Streamlit dashboard
 
-To see what is saved:
+`dashboard/app.py` (layout only) and `dashboard/data.py` (data preparation, no
+Streamlit imports). All numbers come from the storage, analytics and comparison
+modules; the dashboard does not recalculate them, and it only reads data.
+
+**Saved run view**
+
+- Overview: starting cash, final value, total profit/loss, total return and the
+  difference from SPY.
+- Interactive equity curve against SPY, with a hover crosshair and tooltip.
+- Drawdown chart, risk metrics, and a side-by-side metrics table against SPY.
+- Trade history and daily portfolio history tables (daily history downloadable as
+  CSV).
+- Sidebar: choose a saved run and set the risk-free rate.
+
+**Strategy comparison view**
+
+- Every strategy against SPY for each robustness period, with a same-day / next-day
+  execution switch, bar charts of annualised return and max drawdown, and a CSV
+  download. Needs only the price files, not the database.
+
+Clear messages are shown when no runs are saved or price data is missing.
+
+---
+
+## Results
+
+**Setup:** daily SPY closes from **2015-01-02 to 2026-10-21** (2,968 trading days),
+downloaded from Yahoo Finance in October 2026; $10,000 starting cash; $1.00
+commission per trade; risk-free rate 0%. Prices are split-adjusted but **not**
+dividend-adjusted, so all returns exclude dividends.
+
+### Full history
+
+| Strategy | Execution | Final value | Total return | Annualised | Max drawdown | Volatility | Sharpe | Trades |
+|---|---|---|---|---|---|---|---|---|
+| SPY buy-and-hold | same-day close | $37,629.01 | +276.29% | +11.89% | −34.10% | 17.56% | 0.73 | 1 |
+| SMA 50/200 crossover | same-day close | $23,271.12 | +132.71% | +7.42% | −34.10% | 14.26% | 0.57 | 11 |
+| SPY buy-and-hold | next-day close | $38,321.07 | +283.21% | +12.06% | −34.10% | 17.55% | 0.74 | 1 |
+| SMA 50/200 crossover | next-day close | $24,023.57 | +140.24% | +7.71% | −34.10% | 14.26% | 0.59 | 11 |
+
+### By period (same-day close)
+
+| Period | Strategy | Total return | Annualised | Max drawdown | Volatility | Sharpe | Days invested |
+|---|---|---|---|---|---|---|---|
+| 2015–2019 | SPY buy-and-hold | +56.66% | +9.41% | −20.18% | 13.50% | 0.73 | 100% |
+| | SMA 50/200 crossover | +33.35% | +5.93% | −13.77% | 10.03% | 0.63 | 69% |
+| 2020–2022 | SPY buy-and-hold | +17.71% | +5.60% | −34.10% | 25.07% | 0.34 | 100% |
+| | SMA 50/200 crossover | +32.62% | +9.89% | −12.87% | 11.50% | 0.88 | 56% |
+| 2023–2026* | SPY buy-and-hold | +102.99% | +20.49% | −19.00% | 14.88% | 1.33 | 100% |
+| | SMA 50/200 crossover | +61.87% | +13.52% | −19.00% | 14.14% | 0.97 | 92% |
+
+\* Partial period, ending with the data on 2026-10-21.
+
+### How to read these results
+
+- Buy-and-hold had the higher total return over the full history and in two of the
+  three sub-periods. The crossover generally had lower volatility.
+- **The crossover's 2020–2022 result is largely an artefact of the start date.** On
+  2020-01-02 its 50-day average was already above the 200-day, so the fresh run
+  waited in cash until the next upward cross (2020-07-09) and happened to miss the
+  2020 crash. The continuous full-history run was invested through that crash: its
+  sell signal came on 2020-03-30, a week after the market bottom, which is why its
+  maximum drawdown (−34.10%) matches SPY's.
+- In 2015–2019 the crossover could not trade before 2015-10-19 (indicator warm-up),
+  while buy-and-hold was invested from day 1.
+- Next-day execution changed fill prices and, on this data, slightly improved both
+  strategies. That is specific to this history, not a general property.
+- These figures come from one market over about 12 years. They are **not evidence
+  that either strategy is profitable or robust** in the future. Re-downloading
+  prices may change the numbers slightly if Yahoo Finance revises its data.
+
+---
+
+## Limitations
+
+- **Historical backtesting does not predict future performance.** Results describe
+  what fixed rules would have done on one past price history.
+- **Transaction costs are simplified:** only a flat $1.00 commission per trade. No
+  bid/ask spread, slippage, market impact or taxes.
+- **Dividends are not modelled.** Prices are split-adjusted but not
+  dividend-adjusted, which understates buy-and-hold returns in particular.
+- **Cash earns no interest** while a strategy is out of the market.
+- **Execution uses daily closes only:** same-day close (optimistic) or next-day
+  close. There are no opening or intraday prices, and no limit or stop orders.
+- **Strategies are all-in / all-out** on a single ticker (SPY).
+- **Small sample:** one market, three hand-picked calendar periods, and strategy
+  parameters (50/200) that were not optimised or validated out of sample.
+- **Data source:** `yfinance` is an unofficial, community-maintained library;
+  Yahoo's data may contain errors or be revised.
+- **Benchmark timing in single-run analytics:** `python -m simulator.analytics`
+  always buys SPY at the first day's close, so a `next_close` run starts one day
+  after its benchmark. (The strategy comparison does not have this difference.)
+- Rejected and unfilled orders are reported when a strategy runs but are not saved
+  to the database.
+
+---
+
+## Testing
 
 ```bash
-python -m simulator.storage
+pytest
 ```
 
-The tables are `runs`, `trades`, `snapshots` and `holdings`. Money and share
-quantities are stored as text so they stay exact. You can also open the file
-with the `sqlite3` tool that comes with macOS:
+**253 tests, all passing** (verified with pytest 9.1.1 on Python 3.14.8, macOS).
 
-```bash
-sqlite3 data/simulator.db "SELECT trade_date, ticker, side, quantity, price FROM trades;"
-```
-
-## Performance analytics
-
-`simulator/analytics.py` measures a saved run and compares it with simply
-buying the S&P 500 (SPY) over the same dates.
-
-```bash
-python -m examples.buy_and_hold          # save a run first
-python -m simulator.analytics            # analyse the latest saved run
-python -m simulator.analytics buy_and_hold --risk-free-rate 0.04
-```
-
-You can also use it from Python, on a saved run or a simulation in memory:
-
-```python
-from simulator.analytics import analyse, compare_saved_run
-
-comparison = compare_saved_run("buy_and_hold")
-print(comparison.strategy.annualised_return, comparison.benchmark.annualised_return)
-
-performance = analyse(sim.history, sim.portfolio.starting_cash)
-```
-
-### How each metric is calculated
-
-All metrics use the **value series**: the starting cash, followed by the
-portfolio's total value at each day's close. Percentages are stored as
-fractions (0.10 = 10%).
-
-| Metric | Meaning | Formula |
+| Test file | Tests | Covers |
 |---|---|---|
-| Total return | Dollars gained or lost | final value − starting cash |
-| Total return % | Gain as a share of what you started with | final ÷ start − 1 |
-| Annualised return | Steady yearly return that gives the same result (CAGR) | (final ÷ start) ^ (1 ÷ years) − 1, where years = calendar days ÷ 365.25 |
-| Daily returns | Each day's change | today ÷ yesterday − 1 |
-| Volatility | How much daily returns jump around, per year | sample standard deviation of daily returns × √252 |
-| Max drawdown | Biggest fall from a high point to a later low | largest (1 − value ÷ highest value so far) |
-| Sharpe ratio | Return per unit of risk, above a risk-free investment | mean(daily return − daily risk-free) ÷ std. dev. of daily returns × √252 |
+| `test_portfolio.py` | 32 | Cash, commission, fractional shares, average cost, validation |
+| `test_execution.py` | 32 | Next-day execution: day *t* orders fill on *t+1*, sizing, rejections |
+| `test_strategies.py` | 30 | Crossover signals, buy-and-hold, look-ahead checks, registry |
+| `test_analytics.py` | 37 | Every metric against hand-calculated values, benchmark, edge cases |
+| `test_comparison.py` | 25 | Date alignment, period boundaries, warm-up, look-ahead bias |
+| `test_storage.py` | 20 | Save/load round trips, duplicates, transactions, error cases |
+| `test_dashboard_data.py` | 18 | Dashboard tables and chart data |
+| `test_engine.py` | 17 | Replay order, snapshots, no future prices |
+| `test_data_loader.py` | 15 | CSV validation and trading-day alignment |
+| `test_run_strategy.py` | 15 | Running and saving strategies, exact 50/200 crossing days, re-runs |
+| `test_dashboard_app.py` | 9 | The Streamlit app, run headlessly with Streamlit's `AppTest` |
+| `test_download.py` | 3 | Cleaning downloaded data (no network) |
 
-252 is the usual number of US trading days in a year.
+Expected values in the tests are worked out by hand from small made-up price
+series. Look-ahead protection is tested directly: changing prices after a given
+day must not change any earlier decision.
 
-**Limitations and assumptions**
+---
 
-- **Annualised return** hides the ups and downs, and for periods shorter than
-  about a year it stretches a short result to a full year, which can give huge,
-  meaningless numbers. The report warns when there is less than a year of data.
-- **Sharpe ratio** assumes a risk-free rate of **0%** by default
-  (`RISK_FREE_RATE` in `simulator/config.py`). Real Treasury-bill rates are
-  usually higher, which lowers the Sharpe ratio; try `--risk-free-rate 0.04`.
-- **Undefined values** are shown as `n/a` instead of a misleading number:
-  annualised return over zero days, volatility or Sharpe ratio with fewer than
-  two daily returns, and Sharpe ratio when volatility is zero (an all-cash
-  portfolio).
-- The first daily return compares the first day's close with the starting
-  cash, so it includes that day's commissions.
+## Project structure
 
-### The S&P 500 benchmark
-
-The benchmark runs through the same engine as any strategy: on the first day it
-spends all the starting cash (minus one commission) on SPY at that day's close,
-rounding the share count down so it never overspends, and holds until the end.
-It is measured on exactly the strategy's dates; if SPY has no price on one of
-them, you get an error instead of a mismatched comparison. Like the strategy,
-SPY prices are adjusted for splits but not dividends, so both returns leave out
-dividends.
-
-**No look-ahead bias:** the benchmark's purchase uses only the first day's
-price, max drawdown compares each day only with earlier highs, and analytics
-are calculated after the simulation ends, so they never influence a trade.
-
-## Dashboard
-
-An interactive Streamlit dashboard for browsing saved runs. It only reads the
-database: it never places trades, and no real money is involved.
-
-**Install** (once; Streamlit is listed in `requirements.txt`):
-
-```bash
-source .venv/bin/activate
-pip install -r requirements.txt
 ```
-
-**Launch** from the project folder:
-
-```bash
-python -m examples.buy_and_hold   # save at least one run first
-streamlit run dashboard/app.py
+simulator/
+  config.py         tickers, benchmark, start date, file paths, risk-free rate
+  download.py       download prices from Yahoo Finance (CLI)
+  data_loader.py    load and validate price CSVs; PriceHistory
+  portfolio.py      cash, positions, trades, commission (Decimal)
+  engine.py         day-by-day Simulation and execution timing
+  strategies.py     BuyAndHold, MovingAverageCrossover, strategy registry
+  run_strategy.py   run and save registered strategies (CLI)
+  storage.py        SQLite persistence (CLI lists saved runs)
+  analytics.py      performance metrics and SPY benchmark (CLI report)
+  comparison.py     fair multi-period strategy comparison (CLI report)
+dashboard/
+  app.py            Streamlit page layout and charts
+  data.py           data preparation for the dashboard (no Streamlit)
+examples/
+  buy_and_hold.py   minimal example: buy 10 AAPL shares and hold
+tests/              pytest suite (253 tests)
+.streamlit/
+  config.toml       dashboard theme; disables usage statistics
+data/               downloaded prices and SQLite database (not in Git)
 ```
-
-Your browser opens at http://localhost:8501. Press `Ctrl+C` in the terminal to
-stop the dashboard.
-
-What it shows:
-
-- **Overview:** starting cash, final value, total profit/loss and total return,
-  with the difference from the S&P 500 in percentage points (pp).
-- **Equity curve:** portfolio value each day next to SPY buy-and-hold. Hover
-  for exact values on any date.
-- **Risk and return:** annualised return, max drawdown, volatility and Sharpe
-  ratio, plus a side-by-side table against SPY.
-- **Drawdown chart:** how far each day's value sits below its previous peak.
-- **Records:** the trade history and daily portfolio history (downloadable as CSV).
-- **Sidebar:** choose a saved run, and set the risk-free rate for the Sharpe ratio.
-- **Strategy comparison** (sidebar view switch): every strategy against SPY over
-  each robustness period, with same-day or next-day execution. Works even if
-  nothing is saved yet; it only needs the price files.
-
-If nothing is saved yet, the page explains how to save a run. If the SPY price
-file is missing, it shows the strategy alone with a warning.
-
-How it is organised:
-
-| File | Role |
-|---|---|
-| `dashboard/data.py` | Loads a run and builds tables and chart data (no Streamlit; tested) |
-| `dashboard/app.py` | Page layout, charts and messages only |
-| `.streamlit/config.toml` | Dark theme; turns off Streamlit's usage statistics |
-
-All numbers come from `simulator/storage.py` and `simulator/analytics.py`; the
-dashboard does not recalculate them.
