@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local data and databases (generated, not source code).
+# Downloaded prices are for personal use, so they are not published.
+data/
+*.db
+*.sqlite3
+
+# Secrets
+.env
+
+# macOS / editors
+.DS_Store
+.vscode/
+.idea/

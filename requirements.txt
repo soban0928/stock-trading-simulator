@@ -1,0 +1,11 @@
+# Data handling
+pandas>=2.2
+
+# Downloading historical prices (unofficial Yahoo Finance library)
+yfinance>=0.2.50
+
+# Dashboard (includes the Altair chart library)
+streamlit>=1.40
+
+# Testing
+pytest>=8.0

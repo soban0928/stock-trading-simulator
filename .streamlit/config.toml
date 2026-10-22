@@ -1,0 +1,17 @@
+# Streamlit settings for the dashboard (dashboard/app.py).
+
+[theme]
+base = "dark"
+primaryColor = "#3987e5"
+backgroundColor = "#0d0d0d"
+secondaryBackgroundColor = "#1a1a19"
+textColor = "#f0efec"
+borderColor = "#2c2c2a"
+font = "sans-serif"
+
+[browser]
+# Don't send anonymous usage statistics to Streamlit.
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
